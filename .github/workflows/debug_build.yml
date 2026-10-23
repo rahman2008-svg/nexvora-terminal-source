@@ -1,207 +1,153 @@
 name: NexVora Terminal - Debug APK
 
 on:
-push:
-branches:
-- main
-- master
-- 'github-releases/**'
-workflow_dispatch:
-pull_request:
-branches:
-- main
-- master
+  push:
+    branches:
+      - main
+      - master
+      - 'github-releases/**'
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - master
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-build:
-name: Build ${{ matrix.package_variant }}
-runs-on: ubuntu-latest
-strategy:
-fail-fast: false
-matrix:
-package_variant: [apt-android-7, apt-android-5]
+  build:
+    name: Build ${{ matrix.package_variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package_variant: [apt-android-7, apt-android-5]
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v6
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-  - name: Set up Java 17
-    uses: actions/setup-java@v5
-    with:
-      distribution: temurin
-      java-version: '17'
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
 
-  - name: Install Android SDK and NDK
-    shell: bash
-    run: |
-      set -euo pipefail
+      - name: Install Android SDK and NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          prop() { grep -E "^$1=" gradle.properties | head -1 | cut -d= -f2- | tr -d '\r'; }
+          NDK_VERSION="$(prop ndkVersion)"
+          COMPILE_SDK="$(prop compileSdkVersion)"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -n "$NDK_VERSION"
+          test -n "$COMPILE_SDK"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-$COMPILE_SDK" "ndk;$NDK_VERSION"
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
 
-      prop() {
-        grep -E "^$1=" gradle.properties | head -1 | cut -d= -f2- | tr -d '\r'
-      }
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      NDK_VERSION="$(prop ndkVersion)"
-      COMPILE_SDK="$(prop compileSdkVersion)"
-      SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+      - name: Build APKs
+        shell: bash
+        env:
+          PACKAGE_VARIANT: ${{ matrix.package_variant }}
+        run: |
+          set -euo pipefail
 
-      test -n "$NDK_VERSION"
-      test -n "$COMPILE_SDK"
-      test -x "$SDKMANAGER"
+          VERSION_LINE="$(grep -m 1 'versionName "' app/build.gradle)"
+          CURRENT_VERSION="$(printf '%s\n' "$VERSION_LINE" | sed -E 's/.*versionName "([^"]+)".*/\1/')"
+          VERSION="${CURRENT_VERSION}+${GITHUB_SHA:0:7}"
 
-      yes | "$SDKMANAGER" --licenses >/dev/null || true
-      "$SDKMANAGER" "platforms;android-$COMPILE_SDK" "ndk;$NDK_VERSION"
+          export TERMUX_APP_VERSION_NAME="$VERSION"
+          export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
 
-      test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          ./gradlew --no-daemon assembleDebug
 
-  - name: Set up Gradle
-    uses: gradle/actions/setup-gradle@v4
+          APK_DIR="app/build/outputs/apk/debug"
+          echo "APK_DIR=$APK_DIR" >> "$GITHUB_ENV"
+          echo "APK_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PACKAGE_VARIANT=$PACKAGE_VARIANT" >> "$GITHUB_ENV"
 
-  - name: Build and validate APKs
-    shell: bash
-    env:
-      PACKAGE_VARIANT: ${{ matrix.package_variant }}
-    run: |
-      set -euo pipefail
+          echo "APK files generated:"
+          find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' -print
 
-      BUILD_SHA="$GITHUB_SHA"
-      if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-        BUILD_SHA="${{ github.event.pull_request.head.sha }}"
-      fi
+          for ABI in universal arm64-v8a armeabi-v7a x86_64 x86; do
+            APK="$(find "$APK_DIR" -maxdepth 1 -type f -name "*-${ABI}.apk" -print -quit)"
+            if [[ -z "$APK" ]]; then
+              echo "Missing APK for ABI: $ABI"
+              exit 1
+            fi
 
-      VERSION_REGEX='\s+versionName "([^"]+)"$'
-      CURRENT_VERSION="$(grep -m 1 -E "$VERSION_REGEX" app/build.gradle | sed -r "s/$VERSION_REGEX/\1/")"
-      VERSION="${CURRENT_VERSION}+${BUILD_SHA:0:7}"
+            KEY="$(echo "$ABI" | tr '[:lower:]-' '[:upper:]_')"
+            echo "APK_${KEY}=$APK" >> "$GITHUB_ENV"
+          done
 
-      if ! printf '%s' "$VERSION" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
-        echo "Invalid semantic version: $VERSION"
-        exit 1
-      fi
+          (
+            cd "$APK_DIR"
+            sha256sum ./*.apk > SHA256SUMS.txt
+          )
 
-      export TERMUX_APP_VERSION_NAME="$VERSION"
-      export TERMUX_PACKAGE_VARIANT="$PACKAGE_VARIANT"
+      - name: Verify APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
+          BADGING="$("$AAPT2" dump badging "$APK_UNIVERSAL")"
+          echo "$BADGING" | head -5
+          echo "$BADGING" | grep -Fq "package: name='com.termux'"
+          echo "$BADGING" | grep -Fq "application-label:'NexVora Terminal'"
+          echo "$BADGING" | grep -Fq "versionName='$APK_VERSION'"
+          echo "APK identity verified."
 
-      APK_DIR="app/build/outputs/apk/debug"
-      mkdir -p "$APK_DIR"
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-universal
+          path: ${{ env.APK_UNIVERSAL }}
+          if-no-files-found: error
+          retention-days: 14
 
-      echo "Building $PACKAGE_VARIANT, version $VERSION"
-      ./gradlew --no-daemon assembleDebug
+      - name: Upload arm64-v8a APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-arm64-v8a
+          path: ${{ env.APK_ARM64_V8A }}
+          if-no-files-found: error
+          retention-days: 14
 
-      echo "Validating APK files"
-      for ABI in universal arm64-v8a armeabi-v7a x86_64 x86; do
-        APK="$(find "$APK_DIR" -maxdepth 1 -type f -name "*-${ABI}.apk" -print -quit)"
-        if [[ -z "$APK" ]]; then
-          echo "Missing APK for ABI: $ABI"
-          echo "Files found:"
-          ls -la "$APK_DIR"
-          exit 1
-        fi
-        echo "Found: $APK"
-      done
+      - name: Upload armeabi-v7a APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-armeabi-v7a
+          path: ${{ env.APK_ARMEABI_V7A }}
+          if-no-files-found: error
+          retention-days: 14
 
-      UNIVERSAL_APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*-universal.apk' -print -quit)"
-      ARM64_APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*-arm64-v8a.apk' -print -quit)"
-      V7A_APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*-armeabi-v7a.apk' -print -quit)"
-      X86_64_APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*-x86_64.apk' -print -quit)"
-      X86_APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*-x86.apk' -print -quit)"
+      - name: Upload x86_64 APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-x86_64
+          path: ${{ env.APK_X86_64 }}
+          if-no-files-found: error
+          retention-days: 14
 
-      {
-        echo "APK_DIR=$APK_DIR"
-        echo "UNIVERSAL_APK=$UNIVERSAL_APK"
-        echo "ARM64_APK=$ARM64_APK"
-        echo "V7A_APK=$V7A_APK"
-        echo "X86_64_APK=$X86_64_APK"
-        echo "X86_APK=$X86_APK"
-        echo "APK_VERSION=$VERSION"
-        echo "PACKAGE_VARIANT=$PACKAGE_VARIANT"
-      } >> "$GITHUB_ENV"
+      - name: Upload x86 APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-x86
+          path: ${{ env.APK_X86 }}
+          if-no-files-found: error
+          retention-days: 14
 
-      echo "Generating SHA-256 checksums"
-      (
-        cd "$APK_DIR"
-        sha256sum \
-          "$(basename "$UNIVERSAL_APK")" \
-          "$(basename "$ARM64_APK")" \
-          "$(basename "$V7A_APK")" \
-          "$(basename "$X86_64_APK")" \
-          "$(basename "$X86_APK")" \
-          > SHA256SUMS.txt
-      )
-
-  - name: Verify APK identity
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
-      test -x "$AAPT2"
-
-      BADGING="$("$AAPT2" dump badging "$UNIVERSAL_APK")"
-      echo "$BADGING" | head -5
-
-      echo "$BADGING" | grep -Fq "package: name='com.termux'" || {
-        echo "Unexpected application ID"
-        exit 1
-      }
-
-      echo "$BADGING" | grep -Fq "application-label:'NexVora Terminal'" || {
-        echo "Unexpected application label"
-        exit 1
-      }
-
-      echo "$BADGING" | grep -Fq "versionName='$APK_VERSION'" || {
-        echo "Unexpected version name"
-        exit 1
-      }
-
-      echo "APK identity verified successfully"
-
-  - name: Upload universal APK
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-universal
-      path: ${{ env.UNIVERSAL_APK }}
-      if-no-files-found: error
-      retention-days: 14
-
-  - name: Upload arm64-v8a APK
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-arm64-v8a
-      path: ${{ env.ARM64_APK }}
-      if-no-files-found: error
-      retention-days: 14
-
-  - name: Upload armeabi-v7a APK
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-armeabi-v7a
-      path: ${{ env.V7A_APK }}
-      if-no-files-found: error
-      retention-days: 14
-
-  - name: Upload x86_64 APK
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-x86_64
-      path: ${{ env.X86_64_APK }}
-      if-no-files-found: error
-      retention-days: 14
-
-  - name: Upload x86 APK
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-x86
-      path: ${{ env.X86_APK }}
-      if-no-files-found: error
-      retention-days: 14
-
-  - name: Upload SHA-256 checksums
-    uses: actions/upload-artifact@v6
-    with:
-      name: NexVora-Terminal-${{ matrix.package_variant }}-SHA256SUMS
-      path: ${{ env.APK_DIR }}/SHA256SUMS.txt
-      if-no-files-found: error
-      retention-days: 14
+      - name: Upload SHA-256 checksums
+        uses: actions/upload-artifact@v6
+        with:
+          name: NexVora-Terminal-${{ matrix.package_variant }}-SHA256SUMS
+          path: ${{ env.APK_DIR }}/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
