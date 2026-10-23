@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NexVora Terminal palette: premium dark with cyan and violet accents. -->
+<resources>
+    <color name="nexvora_bg">#FF0B0F1A</color>
+    <color name="nexvora_surface">#FF121828</color>
+    <color name="nexvora_surface_high">#FF1B2338</color>
+    <color name="nexvora_cyan">#FF22D3EE</color>
+    <color name="nexvora_violet">#FF8B5CF6</color>
+    <color name="nexvora_violet_dark">#FF5B3FD0</color>
+    <color name="nexvora_text">#FFE6EAF2</color>
+    <color name="nexvora_text_muted">#FF9AA4BC</color>
+</resources>

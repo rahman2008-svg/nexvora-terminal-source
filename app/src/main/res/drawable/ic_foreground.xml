@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:height="108dp"
+    android:width="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- NexVora Terminal: dark panel with a ">" prompt and "_" cursor.
+         Kept inside the 66dp adaptive-icon safe zone. Also used as the monochrome icon. -->
+    <path
+        android:fillColor="#FF0B0F1A"
+        android:pathData="M30,30 h48 a6,6 0 0 1 6,6 v36 a6,6 0 0 1 -6,6 h-48 a6,6 0 0 1 -6,-6 v-36 a6,6 0 0 1 6,-6 z" />
+
+    <path
+        android:fillColor="#FF22D3EE"
+        android:pathData="M37,40 l4.5,-3.5 l14,13.5 l-14,13.5 l-4.5,-3.5 l10.5,-10 z" />
+
+    <path
+        android:fillColor="#FF8B5CF6"
+        android:pathData="M58,64 h16 v5 h-16 z" />
+</vector>
