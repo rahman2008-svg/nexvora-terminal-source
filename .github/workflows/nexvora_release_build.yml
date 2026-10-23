@@ -78,7 +78,7 @@ jobs:
           (cd signed && sha256sum *.apk > sha256sums)
 
       - name: Upload signed APKs
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nexvora-terminal-signed-release
           path: signed/*
